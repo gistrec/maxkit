@@ -88,7 +88,9 @@ async def get_exception(response: aiohttp.ClientResponse):
 
     elif response.content_type == "application/json":
         resp_json = await response.json()
-        text = resp_json.get("code")
+        # ``code`` may be absent in some error bodies; default to "" so the
+        # str checks below don't blow up with `None.startswith(...)`.
+        text = resp_json.get("code") or ""
         description = resp_json.get("message")
 
     else:

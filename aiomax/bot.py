@@ -48,6 +48,7 @@ class Bot(Router):
         use_certificate: bool = False,
         api_url: str = "https://platform-api2.max.ru/",
         shutdown_timeout: "float | None" = 5.0,
+        attachment_retries: int = 10,
     ):
         """
         Bot init
@@ -66,12 +67,16 @@ class Bot(Router):
         :param shutdown_timeout: How long (in seconds) to wait for running
         handlers to finish on shutdown before cancelling them. ``None`` waits
         indefinitely.
+        :param attachment_retries: How many times to retry sending/editing a
+        message while its attachment is still being processed by the server
+        before giving up and raising ``AttachmentNotReady``.
         """
         super().__init__(case_sensitive)
 
         self.use_certificate: bool = use_certificate
         self.api_url: str = api_url
         self.shutdown_timeout: "float | None" = shutdown_timeout
+        self.attachment_retries: int = attachment_retries
 
         self.access_token: str = access_token
         self.session: aiohttp.ClientSession | None = None
@@ -523,21 +528,25 @@ class Bot(Router):
         return await response.json()
 
     async def _upload(
-        self, data: "IO | str", type: str, field_name: str = "data"
+        self, data: "IO | str", type: str, filename: "str | None" = None
     ) -> dict:
         """
         Uploads a file to the server. Returns raw JSON with the token.
 
         :param data: File-like object or path to the file
         :param type: File type
-        :param field_name: Name of the form field sent to the API
+        :param filename: Optional file name sent alongside the file
         """
         if isinstance(data, str):
             async with aiofiles.open(data, "rb") as f:
                 data = await f.read()
 
-        form = aiohttp.FormData(quote_fields=False)
-        form.add_field(field_name, data)
+        # The form field name must be a fixed, safe literal. Passing an
+        # attacker-influenced filename as the field name (previously the case
+        # for upload_file) with quote_fields disabled allowed header injection
+        # into the multipart request. aiohttp encodes ``filename`` safely.
+        form = aiohttp.FormData()
+        form.add_field("data", data, filename=filename)
 
         url_resp = await self.post("uploads", params={"type": type})
         url_json = await url_resp.json()
@@ -658,38 +667,33 @@ class Bot(Router):
             text, format, reply_to, notify, keyboard, attachments
         )
 
-        try:
-            response = await self.post(
-                "messages",
-                params=params,
-                json=body,
-            )
-            json = await response.json()
-            if not json.get("success", True):
-                # get_exception() returns None for 2xx responses, so a bare
-                # `raise await get_exception(...)` would `raise None`
-                # (TypeError). Fall back to a real exception.
-                exception = await utils.get_exception(response)
-                raise exception or exceptions.UnknownErrorException(
-                    json.get("code"), json.get("message")
+        # Retry a bounded number of times while the attachment is still being
+        # processed, instead of recursing forever (which grew the stack until
+        # RecursionError and blocked the handler indefinitely).
+        for attempt in range(self.attachment_retries + 1):
+            try:
+                response = await self.post(
+                    "messages",
+                    params=params,
+                    json=body,
                 )
-            message = Message.from_json(json["message"])
-            message.bot = self
-            return message
+                json = await response.json()
+                if not json.get("success", True):
+                    # get_exception() returns None for 2xx responses, so a
+                    # bare `raise await get_exception(...)` would `raise None`
+                    # (TypeError). Fall back to a real exception.
+                    exception = await utils.get_exception(response)
+                    raise exception or exceptions.UnknownErrorException(
+                        json.get("code"), json.get("message")
+                    )
+                message = Message.from_json(json["message"])
+                message.bot = self
+                return message
 
-        except exceptions.AttachmentNotReady:
-            await asyncio.sleep(1)
-            return await self.send_message(
-                text=text,
-                chat_id=chat_id,
-                user_id=user_id,
-                format=format,
-                reply_to=reply_to,
-                notify=notify,
-                disable_link_preview=disable_link_preview,
-                keyboard=keyboard,
-                attachments=attachments,
-            )
+            except exceptions.AttachmentNotReady:
+                if attempt >= self.attachment_retries:
+                    raise
+                await asyncio.sleep(1)
 
     async def edit_message(
         self,
@@ -724,36 +728,33 @@ class Bot(Router):
             text, format, reply_to, notify, keyboard, attachments
         )
 
-        try:
-            response = await self.put(
-                "messages",
-                params=params,
-                json=body,
-            )
-            json = await response.json()
-            if not json.get("success", True):
-                # Never fall through to Message.from_json() on failure (it
-                # would return a broken Message with body=None); and never
-                # `raise None` when get_exception() returns None for 2xx.
-                exception = await utils.get_exception(response)
-                raise exception or exceptions.UnknownErrorException(
-                    json.get("code"), json.get("message")
+        for attempt in range(self.attachment_retries + 1):
+            try:
+                response = await self.put(
+                    "messages",
+                    params=params,
+                    json=body,
                 )
-            message = Message.from_json(json)
-            message.bot = self
-            return message
+                json = await response.json()
+                if not json.get("success", True):
+                    # Never fall through to Message.from_json() on failure (it
+                    # would return a broken Message with body=None); and never
+                    # `raise None` when get_exception() returns None for 2xx.
+                    exception = await utils.get_exception(response)
+                    raise exception or exceptions.UnknownErrorException(
+                        json.get("code"), json.get("message")
+                    )
+                # The edit endpoint may return either the bare message or a
+                # ``{"message": {...}}`` envelope; handle both instead of
+                # building a broken Message from the wrong shape.
+                message = Message.from_json(json.get("message") or json)
+                message.bot = self
+                return message
 
-        except exceptions.AttachmentNotReady:
-            await asyncio.sleep(1)
-            return await self.edit_message(
-                message_id=message_id,
-                text=text,
-                format=format,
-                reply_to=reply_to,
-                notify=notify,
-                keyboard=keyboard,
-                attachments=attachments,
-            )
+            except exceptions.AttachmentNotReady:
+                if attempt >= self.attachment_retries:
+                    raise
+                await asyncio.sleep(1)
 
     async def delete_message(self, message_id: str):
         """

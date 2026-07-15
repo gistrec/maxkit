@@ -2,6 +2,15 @@ from typing import Any
 
 
 class FSMStorage:
+    """
+    In-memory storage of FSM state and data.
+
+    State is keyed by ``user_id`` only, so a user shares the same state and
+    data across every chat they talk to the bot in. In multi-chat/group bots
+    a single user's flows in different chats will therefore collide; scope
+    your own keys by chat if you need per-chat isolation.
+    """
+
     def __init__(self):
         self.states: dict[int, Any] = {}
         self.data: dict[int, Any] = {}

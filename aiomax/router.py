@@ -113,12 +113,12 @@ class Router:
         """
         Returns the bot this router is attached to.
         """
-        if self.parent is None:
-            return None
-
-        if self.parent.parent is None:
-            return self.parent
-        return self.parent.parent
+        # Walk up to the root so nesting deeper than two levels resolves to
+        # the actual Bot instead of an intermediate Router.
+        node = self
+        while node.parent is not None:
+            node = node.parent
+        return node if node is not self else None
 
     def add_router(self, router: "Router"):
         if router.parent is not None:

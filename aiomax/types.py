@@ -213,9 +213,10 @@ class AudioAttachment(Attachment):
 
     @staticmethod
     def from_json(data: dict) -> "AudioAttachment | None":
+        payload = data.get("payload") or {}
         return AudioAttachment(
-            data["payload"]["url"],
-            data["payload"]["token"],
+            payload.get("url"),
+            payload.get("token"),
             data.get("transcription"),
         )
 
@@ -1270,7 +1271,7 @@ class Callback:
             )
 
         out = await self.bot.post(
-            "https://botapi.max.ru/answers",
+            "answers",
             params={"callback_id": self.callback_id},
             json=body,
         )
