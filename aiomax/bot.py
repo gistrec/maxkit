@@ -47,6 +47,7 @@ class Bot(Router):
         max_messages_cached: int = 10000,
         use_certificate: bool = False,
         api_url: str = "https://platform-api2.max.ru/",
+        shutdown_timeout: "float | None" = 5.0,
     ):
         """
         Bot init
@@ -62,16 +63,24 @@ class Bot(Router):
         Set to 0 to disable caching
         :param use_certificate: Whether to automatically use
         a Russian Mintsifra SSL certificate
+        :param shutdown_timeout: How long (in seconds) to wait for running
+        handlers to finish on shutdown before cancelling them. ``None`` waits
+        indefinitely.
         """
         super().__init__(case_sensitive)
 
         self.use_certificate: bool = use_certificate
         self.api_url: str = api_url
+        self.shutdown_timeout: "float | None" = shutdown_timeout
 
         self.access_token: str = access_token
         self.session: aiohttp.ClientSession | None = None
         self.polling = False
         self._handler_tasks: set[asyncio.Task] = set()
+        # Per-user locks serialise handler execution for a single user so
+        # concurrent updates from the same user cannot race on FSM state.
+        self._user_locks: dict[int, asyncio.Lock] = {}
+        self._user_lock_counts: dict[int, int] = {}
 
         self.command_prefixes: str | list[str] = command_prefixes
         self.mention_prefix: bool = mention_prefix
@@ -657,7 +666,13 @@ class Bot(Router):
             )
             json = await response.json()
             if not json.get("success", True):
-                raise await utils.get_exception(response)
+                # get_exception() returns None for 2xx responses, so a bare
+                # `raise await get_exception(...)` would `raise None`
+                # (TypeError). Fall back to a real exception.
+                exception = await utils.get_exception(response)
+                raise exception or exceptions.UnknownErrorException(
+                    json.get("code"), json.get("message")
+                )
             message = Message.from_json(json["message"])
             message.bot = self
             return message
@@ -717,9 +732,13 @@ class Bot(Router):
             )
             json = await response.json()
             if not json.get("success", True):
+                # Never fall through to Message.from_json() on failure (it
+                # would return a broken Message with body=None); and never
+                # `raise None` when get_exception() returns None for 2xx.
                 exception = await utils.get_exception(response)
-                if exception:
-                    raise exception
+                raise exception or exceptions.UnknownErrorException(
+                    json.get("code"), json.get("message")
+                )
             message = Message.from_json(json)
             message.bot = self
             return message
@@ -782,16 +801,44 @@ class Bot(Router):
 
         return json
 
-    def _run_handler(self, coro) -> asyncio.Task:
+    def _run_handler(self, coro, user_id: "int | None" = None) -> asyncio.Task:
         """
         Runs a handler as a task, keeping a reference to it until it
         finishes so that it is not garbage collected mid-flight and can
         be awaited on shutdown.
+
+        If ``user_id`` is given, handlers for the same user are serialised:
+        the next update from that user waits for the previous handler to
+        finish, so they cannot race on shared FSM state.
         """
+        if user_id is not None:
+            coro = self._run_serialized(coro, user_id)
         task = asyncio.create_task(coro)
         self._handler_tasks.add(task)
         task.add_done_callback(self._handler_tasks.discard)
         return task
+
+    async def _run_serialized(self, coro, user_id: int):
+        """
+        Runs ``coro`` while holding the per-user lock, cleaning the lock up
+        once no more handlers are queued for that user (bounded memory).
+        """
+        lock = self._user_locks.get(user_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._user_locks[user_id] = lock
+
+        self._user_lock_counts[user_id] = (
+            self._user_lock_counts.get(user_id, 0) + 1
+        )
+        try:
+            async with lock:
+                await coro
+        finally:
+            self._user_lock_counts[user_id] -= 1
+            if self._user_lock_counts[user_id] <= 0:
+                self._user_lock_counts.pop(user_id, None)
+                self._user_locks.pop(user_id, None)
 
     async def handle_update(self, update: dict):
         """
@@ -840,9 +887,14 @@ class Bot(Router):
                         continue
 
                 command = text[len(prefix) :]
-                name = command.split()[0]
+                parts = command.split()
+                if not parts:
+                    # Prefix followed by whitespace only (e.g. "/ ") — not a
+                    # command; avoid IndexError on parts[0].
+                    continue
+                name = parts[0]
                 check_name = name if self.case_sensitive else name.lower()
-                args = " ".join(command.split()[1:])
+                args = " ".join(parts[1:])
 
                 if check_name not in self.commands:
                     bot_logger.debug(f'Command "{name}" not handled')
@@ -857,7 +909,8 @@ class Bot(Router):
                     self._run_handler(
                         i.call(
                             CommandContext(self, message, name, args), **kwargs
-                        )
+                        ),
+                        user_id=cursor.user_id,
                     )
 
                     if not i.as_message:
@@ -876,7 +929,10 @@ class Bot(Router):
 
                 if all(filters):
                     kwargs = utils.context_kwargs(handler.call, cursor=cursor)
-                    self._run_handler(handler.call(message, **kwargs))
+                    self._run_handler(
+                        handler.call(message, **kwargs),
+                        user_id=cursor.user_id,
+                    )
                     handled = True
 
             # handle logs
@@ -907,7 +963,8 @@ class Bot(Router):
                         cursor=cursor,
                     )
                     self._run_handler(
-                        handler.call(old_message, message, **kwargs)
+                        handler.call(old_message, message, **kwargs),
+                        user_id=cursor.user_id,
                     )
 
             # handle logs
@@ -927,7 +984,10 @@ class Bot(Router):
 
                 if all(filters):
                     kwargs = utils.context_kwargs(handler.call, cursor=cursor)
-                    self._run_handler(handler.call(payload, **kwargs))
+                    self._run_handler(
+                        handler.call(payload, **kwargs),
+                        user_id=cursor.user_id if cursor else None,
+                    )
 
             # handle logs
             bot_logger.debug(f'Message "{payload.content}" deleted')
@@ -940,7 +1000,7 @@ class Bot(Router):
 
             for i in self.handlers[update_type]:
                 kwargs = utils.context_kwargs(i, cursor=cursor)
-                self._run_handler(i(payload, **kwargs))
+                self._run_handler(i(payload, **kwargs), user_id=cursor.user_id)
 
         if update_type == "chat_title_changed":
             payload = ChatTitleEditPayload.from_json(update)
@@ -953,7 +1013,7 @@ class Bot(Router):
 
             for i in self.handlers[update_type]:
                 kwargs = utils.context_kwargs(i, cursor=cursor)
-                self._run_handler(i(payload, **kwargs))
+                self._run_handler(i(payload, **kwargs), user_id=cursor.user_id)
 
         if update_type == "bot_added" or update_type == "bot_removed":
             payload = ChatMembershipPayload.from_json(update)
@@ -961,7 +1021,7 @@ class Bot(Router):
 
             for i in self.handlers[update_type]:
                 kwargs = utils.context_kwargs(i, cursor=cursor)
-                self._run_handler(i(payload, **kwargs))
+                self._run_handler(i(payload, **kwargs), user_id=cursor.user_id)
 
         if update_type == "user_added" or update_type == "user_removed":
             payload = UserMembershipPayload.from_json(update)
@@ -969,7 +1029,7 @@ class Bot(Router):
 
             for i in self.handlers[update_type]:
                 kwargs = utils.context_kwargs(i, cursor=cursor)
-                self._run_handler(i(payload, **kwargs))
+                self._run_handler(i(payload, **kwargs), user_id=cursor.user_id)
 
         if update_type == "message_callback":
             handled = False
@@ -988,7 +1048,10 @@ class Bot(Router):
 
                 if all(filters):
                     kwargs = utils.context_kwargs(handler.call, cursor=cursor)
-                    self._run_handler(handler.call(callback, **kwargs))
+                    self._run_handler(
+                        handler.call(callback, **kwargs),
+                        user_id=cursor.user_id,
+                    )
                     handled = True
 
             if handled:
@@ -1059,7 +1122,14 @@ class Bot(Router):
                     updates = await self.get_updates()
 
                     for update in updates["updates"]:
-                        await self.handle_update(update)
+                        try:
+                            await self.handle_update(update)
+                        except Exception as e:
+                            # One malformed/unhandled update must not drop the
+                            # rest of the batch: the polling marker is already
+                            # committed in get_updates(), so a raise here would
+                            # lose every remaining update permanently.
+                            bot_logger.exception(e)
 
                 except Exception as e:
                     bot_logger.exception(e)
@@ -1068,11 +1138,22 @@ class Bot(Router):
                 except asyncio.exceptions.CancelledError:
                     break  # Python 3.9 throws an error when exit() is used
 
-            # let running handlers finish before closing the session
-            while self._handler_tasks:
-                await asyncio.gather(
-                    *self._handler_tasks, return_exceptions=True
+            # Let running handlers finish before closing the session, but do
+            # not block shutdown forever on a hung handler.
+            if self._handler_tasks:
+                _, pending = await asyncio.wait(
+                    set(self._handler_tasks),
+                    timeout=self.shutdown_timeout,
                 )
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    bot_logger.warning(
+                        "%d handler task(s) did not finish within %ss on "
+                        "shutdown and were cancelled",
+                        len(pending),
+                        self.shutdown_timeout,
+                    )
 
         self.session = None
         self.polling = False

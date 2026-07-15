@@ -102,7 +102,10 @@ class Router:
         """
         out = deepcopy(self._commands)
         for router in self.routers:
-            out.update(router.commands)
+            # Merge (not overwrite): a command name defined in more than one
+            # router must keep every handler, mirroring the handlers property.
+            for name, handlers in router.commands.items():
+                out.setdefault(name, []).extend(handlers)
         return out
 
     @property
