@@ -79,10 +79,11 @@ class has(_filter):
         self.content = content
 
     def __call__(self, obj: any):
-        if hasattr(obj, "content"):
-            return self.content in obj.content
-        else:
+        if not hasattr(obj, "content"):
             raise Exception(f"Class {type(obj).__name__} has no content")
+        if obj.content is None:
+            return False
+        return self.content in obj.content
 
 
 class startswith(_filter):
@@ -95,10 +96,11 @@ class startswith(_filter):
         self.prefix = prefix
 
     def __call__(self, obj: any):
-        if hasattr(obj, "content"):
-            return obj.content.startswith(self.prefix)
-        else:
+        if not hasattr(obj, "content"):
             raise Exception(f"Class {type(obj).__name__} has no content")
+        if obj.content is None:
+            return False
+        return obj.content.startswith(self.prefix)
 
 
 class endswith(_filter):
@@ -111,10 +113,11 @@ class endswith(_filter):
         self.suffix = suffix
 
     def __call__(self, obj: any):
-        if hasattr(obj, "content"):
-            return obj.content.endswith(self.suffix)
-        else:
+        if not hasattr(obj, "content"):
             raise Exception(f"Class {type(obj).__name__} has no content")
+        if obj.content is None:
+            return False
+        return obj.content.endswith(self.suffix)
 
 
 class regex(_filter):
@@ -127,10 +130,11 @@ class regex(_filter):
         self.pattern = pattern
 
     def __call__(self, obj: any):
-        if hasattr(obj, "content"):
-            return re.fullmatch(self.pattern, obj.content)
-        else:
+        if not hasattr(obj, "content"):
             raise Exception(f"Class {type(obj).__name__} has no content")
+        if obj.content is None:
+            return None
+        return re.fullmatch(self.pattern, obj.content)
 
 
 def papaya(obj: any):
@@ -139,13 +143,14 @@ def papaya(obj: any):
 
     You do not need to call this.
     """
-    if hasattr(obj, "content"):
-        words = obj.content.split()
-        if len(words) < 2:
-            return False
-        return words[-2].lower() == "папайя"
-    else:
+    if not hasattr(obj, "content"):
         raise Exception(f"Class {type(obj).__name__} has no content")
+    if obj.content is None:
+        return False
+    words = obj.content.split()
+    if len(words) < 2:
+        return False
+    return words[-2].lower() == "папайя"
 
 
 class state(_filter):
