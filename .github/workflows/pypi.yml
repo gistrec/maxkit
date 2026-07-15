@@ -16,9 +16,13 @@ jobs:
         with:
           python-version: "3.x"
       - name: Setup for build
+        env:
+          # Pass the (attacker-influenceable) tag name via the environment and
+          # quote it, so it cannot be interpreted as shell by the run: block.
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           python3 -m pip install build --user
-          echo "${{ github.event.release.tag_name }}" > .version
+          printf '%s\n' "$RELEASE_TAG" > .version
       - name: Build a binary wheel and a source tarball
         run: python3 -m build
       - name: Store the distribution packages
