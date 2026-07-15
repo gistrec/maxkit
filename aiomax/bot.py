@@ -71,6 +71,7 @@ class Bot(Router):
         self.access_token: str = access_token
         self.session = None
         self.polling = False
+        self._handler_tasks: set[asyncio.Task] = set()
 
         self.command_prefixes: str | list[str] = command_prefixes
         self.mention_prefix: bool = mention_prefix
@@ -781,6 +782,17 @@ class Bot(Router):
 
         return json
 
+    def _run_handler(self, coro) -> asyncio.Task:
+        """
+        Runs a handler as a task, keeping a reference to it until it
+        finishes so that it is not garbage collected mid-flight and can
+        be awaited on shutdown.
+        """
+        task = asyncio.create_task(coro)
+        self._handler_tasks.add(task)
+        task.add_done_callback(self._handler_tasks.discard)
+        return task
+
     async def handle_update(self, update: dict):
         """
         Handles an update.
@@ -838,7 +850,7 @@ class Bot(Router):
 
                 for i in self.commands[check_name]:
                     kwargs = utils.context_kwargs(i.call, cursor=cursor)
-                    asyncio.create_task(
+                    self._run_handler(
                         i.call(
                             CommandContext(self, message, name, args), **kwargs
                         )
@@ -860,7 +872,7 @@ class Bot(Router):
 
                 if all(filters):
                     kwargs = utils.context_kwargs(handler.call, cursor=cursor)
-                    asyncio.create_task(handler.call(message, **kwargs))
+                    self._run_handler(handler.call(message, **kwargs))
                     handled = True
 
             # handle logs
@@ -890,7 +902,7 @@ class Bot(Router):
                         handler.call,
                         cursor=cursor,
                     )
-                    asyncio.create_task(
+                    self._run_handler(
                         handler.call(old_message, message, **kwargs)
                     )
 
@@ -911,7 +923,7 @@ class Bot(Router):
 
                 if all(filters):
                     kwargs = utils.context_kwargs(handler.call, cursor=cursor)
-                    asyncio.create_task(handler.call(payload, **kwargs))
+                    self._run_handler(handler.call(payload, **kwargs))
 
             # handle logs
             bot_logger.debug(f'Message "{payload.content}" deleted')
@@ -924,7 +936,7 @@ class Bot(Router):
 
             for i in self.handlers[update_type]:
                 kwargs = utils.context_kwargs(i, cursor=cursor)
-                asyncio.create_task(i(payload, **kwargs))
+                self._run_handler(i(payload, **kwargs))
 
         if update_type == "chat_title_changed":
             payload = ChatTitleEditPayload.from_json(update)
@@ -937,7 +949,7 @@ class Bot(Router):
 
             for i in self.handlers[update_type]:
                 kwargs = utils.context_kwargs(i, cursor=cursor)
-                asyncio.create_task(i(payload, **kwargs))
+                self._run_handler(i(payload, **kwargs))
 
         if update_type == "bot_added" or update_type == "bot_removed":
             payload = ChatMembershipPayload.from_json(update)
@@ -945,7 +957,7 @@ class Bot(Router):
 
             for i in self.handlers[update_type]:
                 kwargs = utils.context_kwargs(i, cursor=cursor)
-                asyncio.create_task(i(payload, **kwargs))
+                self._run_handler(i(payload, **kwargs))
 
         if update_type == "user_added" or update_type == "user_removed":
             payload = UserMembershipPayload.from_json(update)
@@ -953,7 +965,7 @@ class Bot(Router):
 
             for i in self.handlers[update_type]:
                 kwargs = utils.context_kwargs(i, cursor=cursor)
-                asyncio.create_task(i(payload, **kwargs))
+                self._run_handler(i(payload, **kwargs))
 
         if update_type == "message_callback":
             handled = False
@@ -972,7 +984,7 @@ class Bot(Router):
 
                 if all(filters):
                     kwargs = utils.context_kwargs(handler.call, cursor=cursor)
-                    asyncio.create_task(handler.call(callback, **kwargs))
+                    self._run_handler(handler.call(callback, **kwargs))
                     handled = True
 
             if handled:
@@ -985,7 +997,7 @@ class Bot(Router):
             bot_logger.debug(f'Created chat "{payload.start_payload}"')
 
             for i in self.handlers[update_type]:
-                asyncio.create_task(i(payload))
+                self._run_handler(i(payload))
 
     async def start_polling(
         self, session: "aiohttp.ClientSession | None" = None
@@ -1036,7 +1048,7 @@ class Bot(Router):
 
             # ready event
             for i in self.handlers["on_ready"]:
-                asyncio.create_task(i())
+                self._run_handler(i())
 
             while self.polling:
                 try:
@@ -1051,6 +1063,12 @@ class Bot(Router):
 
                 except asyncio.exceptions.CancelledError:
                     break  # Python 3.9 throws an error when exit() is used
+
+            # let running handlers finish before closing the session
+            while self._handler_tasks:
+                await asyncio.gather(
+                    *self._handler_tasks, return_exceptions=True
+                )
 
         self.session = None
         self.polling = False
