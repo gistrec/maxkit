@@ -21,7 +21,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
       - name: Set up wiki repo
         run: |
-          git clone --filter=tree:0 --no-checkout git@github.com:dpnspn/aiomax.wiki.git temp
+          git clone --filter=tree:0 --no-checkout git@github.com:${{ github.repository }}.wiki.git temp
           cp -r temp/.git docs/.git
           rm -rf temp
       - name: Push commits to main wiki remote
