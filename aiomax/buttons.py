@@ -1,4 +1,7 @@
+import logging
 from typing import Literal
+
+button_logger = logging.getLogger("aiomax.buttons")
 
 
 class Button:
@@ -42,7 +45,10 @@ class Button:
         elif data["type"] == "open_app":
             return WebAppButton.from_json(data)
         else:
-            raise Exception(f"Unknown button type: {data['type']}")
+            # Unknown/newly-added button type: keep parsing the keyboard
+            # instead of crashing the whole update.
+            button_logger.warning("Unknown button type: %s", data.get("type"))
+            return Button(data["type"], data.get("text", ""))
 
     def to_json(self) -> dict:
         return {"type": self.type, "text": self.text}
@@ -101,7 +107,7 @@ class LinkButton(Button):
 
     @staticmethod
     def from_json(data: dict) -> "LinkButton":
-        return LinkButton(data["text"], data["url"])
+        return LinkButton(data.get("text", ""), data.get("url", ""))
 
     def to_json(self) -> dict:
         return {"type": "link", "text": self.text, "url": self.url}
@@ -125,7 +131,9 @@ class GeolocationButton(Button):
 
     @staticmethod
     def from_json(data: dict) -> "GeolocationButton":
-        return GeolocationButton(data["text"], data["quick"])
+        return GeolocationButton(
+            data.get("text", ""), data.get("quick", False)
+        )
 
     def to_json(self) -> dict:
         return {
@@ -146,7 +154,7 @@ class ContactButton(Button):
 
     @staticmethod
     def from_json(data: dict) -> "ContactButton":
-        return ContactButton(data["text"])
+        return ContactButton(data.get("text", ""))
 
     def to_json(self) -> dict:
         return {"type": "request_contact", "text": self.text}
@@ -181,7 +189,7 @@ class ChatButton(Button):
     @staticmethod
     def from_json(data: dict) -> "ChatButton":
         return ChatButton(
-            data["text"],
+            data.get("text", ""),
             data.get("chat_title"),
             data.get("chat_description"),
             data.get("start_payload"),
@@ -214,7 +222,7 @@ class WebAppButton(Button):
     @staticmethod
     def from_json(data: dict) -> "WebAppButton":
         bot = data.get("contact_id", data.get("web_app"))
-        return WebAppButton(data["text"], bot)
+        return WebAppButton(data.get("text", ""), bot)
 
     def to_json(self) -> dict:
         data = {"type": "open_app", "text": self.text}
@@ -237,7 +245,7 @@ class MessageButton(Button):
 
     @staticmethod
     def from_json(data: dict) -> "MessageButton":
-        return MessageButton(data["text"])
+        return MessageButton(data.get("text", ""))
 
     def to_json(self) -> dict:
         return {"type": "message", "text": self.text}

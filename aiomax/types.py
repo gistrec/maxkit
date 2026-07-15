@@ -1,10 +1,13 @@
+import logging
 from typing import Callable, Literal, Optional
 
 from . import buttons, exceptions, utils
 
+type_logger = logging.getLogger("aiomax.types")
+
 
 class BotCommand:
-    def __init__(self, name: str, description: str):
+    def __init__(self, name: str, description: str, **kwargs):
         self.name = name
         self.description = description
 
@@ -31,6 +34,7 @@ class User:
         is_admin: "bool | None" = None,
         join_time: "int | None" = None,
         permissions: "list[str] | None" = None,
+        **kwargs,
     ):
         self.user_id: int = user_id
         self.first_name: str = first_name
@@ -101,7 +105,12 @@ class Attachment:
         elif data["type"] == "inline_keyboard":
             return InlineKeyboardAttachment.from_json(data)
         else:
-            raise Exception(f"Unknown attachment type: {data['type']}")
+            # Unknown/newly-added attachment type: keep parsing the rest of the
+            # update instead of crashing handle_update (and losing the batch).
+            type_logger.warning(
+                "Unknown attachment type: %s", data.get("type")
+            )
+            return Attachment(data["type"])
 
 
 class PhotoAttachment(Attachment):
@@ -980,6 +989,7 @@ class Image:
     def __init__(
         self,
         url: str,
+        **kwargs,
     ):
         """
         An image.
@@ -997,7 +1007,12 @@ class Image:
 
 
 class ImageRequestPayload:
-    def __init__(self, url: "str | None" = None, token: "str | None" = None):
+    def __init__(
+        self,
+        url: "str | None" = None,
+        token: "str | None" = None,
+        **kwargs,
+    ):
         """
         A payload with the info about an image or avatar to send to the bot.
 
@@ -1046,6 +1061,7 @@ class Chat:
         messages_count: "str | None" = None,
         chat_message_id: "str | None" = None,
         dialog_with_user: "User | None" = None,
+        **kwargs,
     ):
         self.chat_id: int = chat_id
         self.type: str = type
@@ -1085,6 +1101,14 @@ class Chat:
     def from_json(data: dict) -> "Chat | None":
         if data is None:
             return None
+
+        data = dict(data)
+        if data.get("icon") is not None:
+            data["icon"] = Image.from_json(data["icon"])
+        if data.get("pinned_message") is not None:
+            data["pinned_message"] = Message.from_json(data["pinned_message"])
+        if data.get("dialog_with_user") is not None:
+            data["dialog_with_user"] = User.from_json(data["dialog_with_user"])
 
         return Chat(**data)
 
@@ -1345,7 +1369,11 @@ class MessageDeletePayload:
 
         return MessageDeletePayload(
             data["timestamp"],
-            bot.cache.get_message(data.get("message_id")),
+            (
+                bot.cache.get_message(data.get("message_id"))
+                if bot.cache
+                else None
+            ),
             data.get("message_id"),
             data.get("chat_id"),
             data.get("user_id"),
