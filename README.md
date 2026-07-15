@@ -1,32 +1,42 @@
-# aiomax
+# maxkit
 
 Асинхронное API для работы с мессенджером [Max](https://max.ru).
 
+> [!NOTE]
+> maxkit — поддерживаемый преемник [aiomax](https://github.com/dpnspn/aiomax)
+> (оригинальный репозиторий заархивирован 14.07.2026). Модуль по-прежнему
+> импортируется как `aiomax`, поэтому переход с PyPI-пакета `aiomax` сводится
+> к замене зависимости — код ботов менять не нужно.
+
 ## Начало работы
 
-[![AUR Version](https://img.shields.io/aur/version/python-aiomax?style=for-the-badge&logo=arch%20linux&logoColor=white)](https://aur.archlinux.org/packages/python-aiomax)
-
-Чтобы установить aiomax, выполните следующую команду:
+Чтобы установить maxkit, выполните следующую команду:
 
 ```bash
-pip install aiomax
+pip install maxkit
 ```
 
-Чтобы установить git-версию aiomax (возможны баги и нестабильность), выполните команду:
+Чтобы установить git-версию maxkit (возможны баги и нестабильность), выполните команду:
 
 ```bash
-pip install git+https://github.com/dpnspn/aiomax.git
+pip install git+https://github.com/gistrec/maxkit.git
+```
+
+Импорт в коде остаётся прежним:
+
+```python
+import aiomax
 ```
 
 > [!IMPORTANT]
 > С недавнего времени для подключения к серверам Max нужен [сертификат Минцифры](https://www.gosuslugi.ru/crt).
-> Если у вас не установлен сертификат, при создании класса бота можно указать параметр `use_certificate=True` - тогда aiomax будет использовать встроенный сертификат Минцифры.
+> Если у вас не установлен сертификат, при создании класса бота можно указать параметр `use_certificate=True` - тогда библиотека будет использовать встроенный сертификат Минцифры.
 
 > [!WARNING]
 > При использовании сертификатов Минцифры государство Российской Федерации может получать доступ ко всему отправляемому трафику.
 > Рекомендуется не использовать сессию бота для отправки конфиденциальных данных при установленном `use_certificate=True`.
 
-Документация и примеры ботов [тут](https://github.com/dpnspn/aiomax/wiki)
+Документация и примеры ботов [тут](https://github.com/gistrec/maxkit/wiki)
 
 ## Aiomax Community
 
