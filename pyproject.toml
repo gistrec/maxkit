@@ -6,6 +6,9 @@ build-backend = "setuptools.build_meta"
 lint = [
     "ruff"
 ]
+test = [
+    "pytest"
+]
 
 [tool.ruff]
 include = [
@@ -35,6 +38,9 @@ fixable = ["ALL"]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [project]
 name = "maxkit"
