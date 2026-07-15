@@ -822,20 +822,24 @@ class Bot(Router):
             if self.mention_prefix:
                 prefixes.extend([f"@{self.username} {i}" for i in prefixes])
 
+            # Media-only messages (stickers, photos/files without a caption)
+            # arrive with body.text=None and cannot be commands. Fall back to
+            # an empty string so the checks below skip them instead of
+            # raising `TypeError: object of type 'NoneType' has no len()`.
+            text = message.body.text or ""
+
             for prefix in prefixes:
-                if len(message.body.text) <= len(prefix):
+                if len(text) <= len(prefix):
                     continue
 
                 if self.case_sensitive:
-                    if not message.body.text.startswith(prefix):
+                    if not text.startswith(prefix):
                         continue
                 else:
-                    if not message.body.text.lower().startswith(
-                        prefix.lower()
-                    ):
+                    if not text.lower().startswith(prefix.lower()):
                         continue
 
-                command = message.body.text[len(prefix) :]
+                command = text[len(prefix) :]
                 name = command.split()[0]
                 check_name = name if self.case_sensitive else name.lower()
                 args = " ".join(command.split()[1:])
