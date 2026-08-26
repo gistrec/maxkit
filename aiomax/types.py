@@ -550,7 +550,9 @@ class MessageBody:
         return MessageBody(
             mid=data["mid"],
             seq=data["seq"],
-            text=data["text"],
+            # Media-only bodies (stickers, forwarded photos) omit the key
+            # entirely; text is already typed Optional downstream.
+            text=data.get("text"),
             attachments=[
                 Attachment.from_json(x) for x in data.get("attachments", [])
             ],

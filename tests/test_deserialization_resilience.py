@@ -7,6 +7,7 @@ Covers medium-severity findings:
 * M7  - a new/unexpected field from the server must not raise on `**data`.
 * M8  - Chat.from_json must deserialize nested icon/pinned_message/dialog.
 * M11 - Button.from_json must tolerate missing optional fields.
+* M12 - a message body without ``text`` must not crash MessageBody.from_json.
 """
 
 import aiomax
@@ -122,3 +123,24 @@ def test_geolocation_button_without_quick_does_not_crash():
     )
     assert isinstance(btn, buttons.GeolocationButton)
     assert btn.quick is False
+
+
+# --- M12 ------------------------------------------------------------------
+
+def test_message_body_without_text_does_not_crash():
+    body = types.MessageBody.from_json({"mid": "m1", "seq": 1})
+    assert body.text is None
+    assert body.message_id == "m1"
+
+
+def test_linked_message_with_textless_body_does_not_crash():
+    """Media-only forwards reach this path in prod and raised KeyError."""
+    linked = types.LinkedMessage.from_json(
+        {
+            "type": "forward",
+            "message": {"mid": "m1", "seq": 1},
+            "sender": _user(9),
+        }
+    )
+    assert linked.message.text is None
+    assert linked.sender.user_id == 9
