@@ -1,17 +1,25 @@
 name: Lint code
 
 on:
-  push
+  push:
+    branches:
+      - main
+  pull_request:
 
-# Least privilege: the only write this job needs is committing the ruff
-# auto-fixes back to the branch. (Previously: write-all.)
+# Least privilege: ruff findings are reported, never written back, so this
+# needs no write access to the repository — only the right to leave a comment.
+# (Previously: contents: write, to push the auto-fixes.)
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   ruff:
     name: Run Ruff
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
     # Actions are pinned by commit SHA (not a mutable tag) so a compromised or
@@ -27,20 +35,67 @@ jobs:
       run: |
         python3 -m pip install ruff
 
-    - name: Run ruff
+    # pyproject sets fix = true, so a bare `ruff check` would rewrite the files
+    # and exit 0 — reporting needs --no-fix, and the formatter needs --diff.
+    # Both steps keep going so one comment can carry every finding.
+    - name: Check formatting
+      id: fmt
+      continue-on-error: true
       run: |
-        ruff format
-        ruff check
+        set -o pipefail
+        ruff format --diff | tee "$RUNNER_TEMP/fmt.txt"
 
-    - name: Verify Changed files
-      uses: tj-actions/verify-changed-files@a1c6acee9df209257a246f2cc6ae8cb6581c1edf # v20
-      id: verify-changed-files
-      with:
-        files: aiomax/**
+    - name: Lint
+      id: lint
+      continue-on-error: true
+      run: |
+        set -o pipefail
+        ruff check --no-fix | tee "$RUNNER_TEMP/lint.txt"
 
-    - name: Commit changes
-      uses: iarekylew00t/verified-bot-commit@7c65c374f3a553aff88ab7f06819971889822c20 # v1
-      if: steps.verify-changed-files.outputs.files_changed == 'true'
-      with:
-        message: 'Run Ruff'
-        files: aiomax/**
+    - name: Comment on the pull request
+      if: >-
+        github.event_name == 'pull_request' &&
+        (steps.fmt.outcome == 'failure' || steps.lint.outcome == 'failure')
+      env:
+        # Passed through the environment rather than interpolated into the
+        # script, so nothing here can be read as shell.
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        FMT_OUTCOME: ${{ steps.fmt.outcome }}
+        LINT_OUTCOME: ${{ steps.lint.outcome }}
+      run: |
+        {
+          echo "### Ruff нашёл замечания"
+          echo
+          if [ "$FMT_OUTCOME" = "failure" ]; then
+            echo "<details><summary><b>ruff format</b> — требуется переформатирование</summary>"
+            echo
+            echo '```diff'
+            head -c 25000 "$RUNNER_TEMP/fmt.txt"
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+          fi
+          if [ "$LINT_OUTCOME" = "failure" ]; then
+            echo "<details><summary><b>ruff check</b> — нарушения правил</summary>"
+            echo
+            echo '```'
+            head -c 25000 "$RUNNER_TEMP/lint.txt"
+            echo '```'
+            echo
+            echo "</details>"
+            echo
+          fi
+          echo "Чинится локально: \`ruff format && ruff check --fix\`"
+        } > "$RUNNER_TEMP/comment.md"
+
+        gh pr comment "$PR_NUMBER" \
+          --repo "$GITHUB_REPOSITORY" \
+          --body-file "$RUNNER_TEMP/comment.md"
+
+    - name: Fail if ruff reported anything
+      if: steps.fmt.outcome == 'failure' || steps.lint.outcome == 'failure'
+      run: |
+        echo "Ruff reported issues - see the job log above."
+        exit 1
