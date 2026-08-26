@@ -37,25 +37,39 @@ jobs:
 
     # pyproject sets fix = true, so a bare `ruff check` would rewrite the files
     # and exit 0 — reporting needs --no-fix, and the formatter needs --diff.
-    # Both steps keep going so one comment can carry every finding.
+    # Both steps keep going so one report can carry every finding, and both
+    # capture stderr: ruff exits 2 with the reason there (unreadable file, bad
+    # config) and the report would otherwise show an empty block.
     - name: Check formatting
       id: fmt
       continue-on-error: true
       run: |
-        set -o pipefail
-        ruff format --diff | tee "$RUNNER_TEMP/fmt.txt"
+        set +e
+        ruff format --diff > "$RUNNER_TEMP/fmt.txt" 2>&1
+        code=$?
+        cat "$RUNNER_TEMP/fmt.txt"
+        echo "code=$code" >> "$GITHUB_OUTPUT"
+        exit "$code"
 
     - name: Lint
       id: lint
       continue-on-error: true
       run: |
-        set -o pipefail
-        ruff check --no-fix | tee "$RUNNER_TEMP/lint.txt"
+        set +e
+        ruff check --no-fix > "$RUNNER_TEMP/lint.txt" 2>&1
+        code=$?
+        cat "$RUNNER_TEMP/lint.txt"
+        echo "code=$code" >> "$GITHUB_OUTPUT"
+        exit "$code"
 
-    - name: Comment on the pull request
-      if: >-
-        github.event_name == 'pull_request' &&
-        (steps.fmt.outcome == 'failure' || steps.lint.outcome == 'failure')
+    # Runs on clean builds too, to retract a report left by an earlier push.
+    # A pull request opened from a fork gets a read-only GITHUB_TOKEN, so this
+    # cannot comment there no matter what permissions are declared; that is a
+    # missing convenience, not a missing signal, hence continue-on-error — the
+    # findings stay in the job log and the final step still fails the run.
+    - name: Report ruff findings on the pull request
+      if: github.event_name == 'pull_request'
+      continue-on-error: true
       env:
         # Passed through the environment rather than interpolated into the
         # script, so nothing here can be read as shell.
@@ -63,36 +77,69 @@ jobs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
         FMT_OUTCOME: ${{ steps.fmt.outcome }}
         LINT_OUTCOME: ${{ steps.lint.outcome }}
+        FMT_CODE: ${{ steps.fmt.outputs.code }}
+        LINT_CODE: ${{ steps.lint.outputs.code }}
+        MARKER: "<!-- ruff-report -->"
       run: |
+        set -euo pipefail
+
+        # One report per pull request: find the one this job left earlier so it
+        # can be rewritten or retracted instead of stacking up a new comment on
+        # every push.
+        existing=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+          --paginate \
+          --jq "map(select(.body | startswith(\"$MARKER\"))) | .[-1].id // empty")
+
+        if [ "$FMT_OUTCOME" != "failure" ] && [ "$LINT_OUTCOME" != "failure" ]; then
+          if [ -n "$existing" ]; then
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/comments/$existing"
+            echo "Ruff is clean again - retracted the earlier report."
+          fi
+          exit 0
+        fi
+
+        section() {  # title, file, fence, exit code
+          if [ "$4" = "2" ]; then
+            echo "<details open><summary><b>$1</b> — ruff завершился с ошибкой (exit 2)</summary>"
+          else
+            echo "<details><summary><b>$1</b></summary>"
+          fi
+          echo
+          echo "\`\`\`$3"
+          head -c 25000 "$2"
+          # head -c can stop mid-line; force a newline so the closing fence is
+          # not appended to the last truncated line.
+          echo
+          echo "\`\`\`"
+          echo
+          echo "</details>"
+          echo
+        }
+
         {
+          printf '%s\n' "$MARKER"
           echo "### Ruff нашёл замечания"
           echo
           if [ "$FMT_OUTCOME" = "failure" ]; then
-            echo "<details><summary><b>ruff format</b> — требуется переформатирование</summary>"
-            echo
-            echo '```diff'
-            head -c 25000 "$RUNNER_TEMP/fmt.txt"
-            echo '```'
-            echo
-            echo "</details>"
-            echo
+            section "ruff format — требуется переформатирование" \
+              "$RUNNER_TEMP/fmt.txt" diff "$FMT_CODE"
           fi
           if [ "$LINT_OUTCOME" = "failure" ]; then
-            echo "<details><summary><b>ruff check</b> — нарушения правил</summary>"
-            echo
-            echo '```'
-            head -c 25000 "$RUNNER_TEMP/lint.txt"
-            echo '```'
-            echo
-            echo "</details>"
-            echo
+            section "ruff check — нарушения правил" \
+              "$RUNNER_TEMP/lint.txt" "" "$LINT_CODE"
           fi
           echo "Чинится локально: \`ruff format && ruff check --fix\`"
-        } > "$RUNNER_TEMP/comment.md"
+        } > "$RUNNER_TEMP/body.md"
 
-        gh pr comment "$PR_NUMBER" \
-          --repo "$GITHUB_REPOSITORY" \
-          --body-file "$RUNNER_TEMP/comment.md"
+        jq -Rs '{body: .}' < "$RUNNER_TEMP/body.md" > "$RUNNER_TEMP/payload.json"
+
+        if [ -n "$existing" ]; then
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" \
+            --input "$RUNNER_TEMP/payload.json"
+        else
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            --input "$RUNNER_TEMP/payload.json"
+        fi
 
     - name: Fail if ruff reported anything
       if: steps.fmt.outcome == 'failure' || steps.lint.outcome == 'failure'
