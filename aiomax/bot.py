@@ -234,36 +234,44 @@ class Bot(Router):
         Allows you to change info about the bot. Fill in only the fields that
         need to be updated.
 
+        Commands go through the dedicated `PATCH /me/commands` endpoint, not
+        this one: the July 2026 API revision split them out of the generic
+        bot-info body, and the platform silently rejects `PATCH /me` with a
+        `commands` field ("Path /me is not recognized").
+
         :param name: Bot display name
         :param description: Bot description
         :param commands: Commands supported by the bot. To remove all commands,
         pass an empty list.
         :param photo: Bot profile pictur
         """
-        if commands:
-            commands = [i.as_dict() for i in commands]
         if photo:
             photo = photo.as_dict()
 
         payload = {
             "name": name,
             "description": description,
-            "commands": commands,
             "photo": photo,
         }
         payload = {k: v for k, v in payload.items() if v}
 
-        response = await self.patch("me", json=payload)
-        data = await response.json()
+        response = await self.patch("me", json=payload) if payload else None
+
+        if commands is not None:
+            commands = [i.as_dict() for i in commands]
+            await self.patch("me/commands", json={"commands": commands})
 
         # caching info
         if name:
             self.name = name
-        if commands:
+        if commands is not None:
             self.bot_commands = commands
         if description:
             self.description = description
 
+        if response is None:
+            return await self.get_me()
+        data = await response.json()
         return User.from_json(data)
 
     async def get_chats(
