@@ -910,7 +910,13 @@ class Bot(Router):
             message = Message.from_json(update["message"])
             message.bot = self
             message.user_locale = update.get("user_locale")
-            cursor = fsm.FSMCursor(self.storage, message.sender.user_id)
+            # Channel posts come without a sender: no user, so no FSM
+            # cursor and no per-user serialisation.
+            cursor = (
+                fsm.FSMCursor(self.storage, message.sender.user_id)
+                if message.sender
+                else None
+            )
 
             # caching
             if self.cache:
@@ -970,7 +976,7 @@ class Bot(Router):
                         i.call(
                             CommandContext(self, message, name, args), **kwargs
                         ),
-                        user_id=cursor.user_id,
+                        user_id=cursor.user_id if cursor else None,
                     )
 
                     if not i.as_message:
@@ -991,7 +997,7 @@ class Bot(Router):
                     kwargs = utils.context_kwargs(handler.call, cursor=cursor)
                     self._run_handler(
                         handler.call(message, **kwargs),
-                        user_id=cursor.user_id,
+                        user_id=cursor.user_id if cursor else None,
                     )
                     handled = True
 
@@ -1005,7 +1011,13 @@ class Bot(Router):
             message = Message.from_json(update["message"])
             message.bot = self
             message.user_locale = update.get("user_locale")
-            cursor = fsm.FSMCursor(self.storage, message.sender.user_id)
+            # Channel posts come without a sender: no user, so no FSM
+            # cursor and no per-user serialisation.
+            cursor = (
+                fsm.FSMCursor(self.storage, message.sender.user_id)
+                if message.sender
+                else None
+            )
 
             # caching
             old_message = None
@@ -1024,7 +1036,7 @@ class Bot(Router):
                     )
                     self._run_handler(
                         handler.call(old_message, message, **kwargs),
-                        user_id=cursor.user_id,
+                        user_id=cursor.user_id if cursor else None,
                     )
 
             # handle logs

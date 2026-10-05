@@ -587,7 +587,9 @@ class LinkedMessage:
 
     @property
     def user_id(self):
-        return self.sender.user_id
+        # Channel posts have no sender; filters (e.g. filters.state) read
+        # user_id and must see None, not raise.
+        return self.sender.user_id if self.sender else None
 
 
 class Message:
@@ -635,7 +637,9 @@ class Message:
 
     @property
     def user_id(self):
-        return self.sender.user_id
+        # Channel posts have no sender; filters (e.g. filters.state) read
+        # user_id and must see None, not raise.
+        return self.sender.user_id if self.sender else None
 
     @staticmethod
     def from_json(data: dict) -> "Message":
@@ -939,7 +943,9 @@ class CommandContext:
 
     @property
     def user_id(self):
-        return self.sender.user_id
+        # Channel posts have no sender; filters (e.g. filters.state) read
+        # user_id and must see None, not raise.
+        return self.sender.user_id if self.sender else None
 
 
 class CommandHandler:
