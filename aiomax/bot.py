@@ -567,6 +567,22 @@ class Bot(Router):
         token_json = await token_resp.json()
         return token_json
 
+    @staticmethod
+    def _require_token(raw: dict, token: "str | None" = None) -> str:
+        """
+        Returns the attachment token (``raw["token"]`` unless given), or
+        raises when the upload response has none. Max answers some failed
+        uploads with an error body instead of a token; reading it blindly
+        surfaced as a bare ``KeyError('token')``.
+        """
+        token = token or raw.get("token")
+        if not token:
+            raise exceptions.UnknownErrorException(
+                raw.get("code") or "upload.no_token",
+                raw.get("message") or f"Upload response has no token: {raw}",
+            )
+        return token
+
     async def upload_image(self, data: "BinaryIO | str") -> PhotoAttachment:
         """
         Uploads an image to the server and returns a PhotoAttachment.
@@ -574,8 +590,9 @@ class Bot(Router):
         :param data: File-like object or path to the file
         """
         raw_photo = await self._upload(data, "image")
-        token = list(raw_photo["photos"].values())[0]["token"]
-        return PhotoAttachment(token=token)
+        photos = raw_photo.get("photos") or {}
+        token = next(iter(photos.values()), {}).get("token")
+        return PhotoAttachment(token=self._require_token(raw_photo, token))
 
     async def upload_video(self, data: "BinaryIO | str") -> VideoAttachment:
         """
@@ -584,8 +601,7 @@ class Bot(Router):
         :param data: File-like object or path to the file
         """
         raw_video = await self._upload(data, "video")
-        token = raw_video["token"]
-        return VideoAttachment(token=token)
+        return VideoAttachment(token=self._require_token(raw_video))
 
     async def upload_audio(self, data: "BinaryIO | str") -> AudioAttachment:
         """
@@ -594,8 +610,7 @@ class Bot(Router):
         :param data: File-like object or path to the file
         """
         raw_audio = await self._upload(data, "audio")
-        token = raw_audio["token"]
-        return AudioAttachment(token=token)
+        return AudioAttachment(token=self._require_token(raw_audio))
 
     async def upload_file(
         self, data: "IO | str", filename: "str | None" = None
@@ -618,8 +633,7 @@ class Bot(Router):
                 )
 
         raw_file = await self._upload(data, "file", filename)
-        token = raw_file["token"]
-        return FileAttachment(token=token)
+        return FileAttachment(token=self._require_token(raw_file))
 
     async def send_message(
         self,
@@ -855,6 +869,16 @@ class Bot(Router):
         """
         update_type = update["update_type"]
 
+        if update_type == "message_created" and "message" not in update:
+            # Max occasionally sends message_created without the message
+            # itself (about once a day for a busy bot). There is nothing to
+            # dispatch; skip it instead of failing on update["message"].
+            bot_logger.warning(
+                "message_created without a message, skipping; keys=%s",
+                sorted(update),
+            )
+            return
+
         if update_type == "message_created":
             message = Message.from_json(update["message"])
             message.bot = self
@@ -1075,6 +1099,46 @@ class Bot(Router):
             for i in self.handlers[update_type]:
                 self._run_handler(i(payload))
 
+    def _new_session(self) -> aiohttp.ClientSession:
+        """
+        Builds the session every request goes through: the token header, the
+        API base URL (request paths are relative) and, with use_certificate,
+        a TLS context trusting the bundled Mintsifra root CA.
+        """
+        conn = None
+
+        if self.use_certificate:
+            path = os.path.dirname(__file__) + "/russian_trusted_root_ca.cer"
+            ssl_context = ssl.create_default_context()
+            ssl_context.load_verify_locations(cafile=path)
+            conn = aiohttp.TCPConnector(ssl=ssl_context)
+
+        return aiohttp.ClientSession(
+            headers={"Authorization": self.access_token},
+            connector=conn,
+            base_url=self.api_url,
+        )
+
+    async def __aenter__(self) -> "Bot":
+        """
+        Opens a session for code that sends without polling — scripts,
+        workers, cron jobs::
+
+            async with aiomax.Bot(token) as bot:
+                await bot.send_message("hi", user_id=1)
+
+        start_polling() opens its own session; this one is for everything else.
+        """
+        if self.session is not None and not self.session.closed:
+            raise RuntimeError("The bot already has an open session")
+        self.session = self._new_session()
+        return self
+
+    async def __aexit__(self, *exc_info) -> None:
+        if self.session is not None:
+            await self.session.close()
+        self.session = None
+
     async def start_polling(
         self, session: "aiohttp.ClientSession | None" = None
     ):
@@ -1085,20 +1149,8 @@ class Bot(Router):
         """
         self.polling = True
 
-        conn = None
-
-        if self.use_certificate:
-            path = os.path.dirname(__file__) + "/russian_trusted_root_ca.cer"
-            ssl_context = ssl.create_default_context()
-            ssl_context.load_verify_locations(cafile=path)
-            conn = aiohttp.TCPConnector(ssl=ssl_context)
-
         if not session:
-            session = aiohttp.ClientSession(
-                headers={"Authorization": self.access_token},
-                connector=conn,
-                base_url=self.api_url,
-            )
+            session = self._new_session()
 
         async with session:
             self.session = session
