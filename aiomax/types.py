@@ -20,9 +20,12 @@ class User:
         self,
         user_id: int,
         first_name: str,
-        name: str,
-        is_bot: bool,
-        last_activity_time: int,
+        # Max marks name deprecated ("скоро будет удалено") and omits
+        # last_activity_time for users who hide their online status. Both
+        # must be optional, or such a sender drops the whole update.
+        name: "str | None" = None,
+        is_bot: bool = False,
+        last_activity_time: "int | None" = None,
         last_name: "str | None" = None,
         username: "str | None" = None,
         description: "str | None" = None,
@@ -39,7 +42,11 @@ class User:
         self.user_id: int = user_id
         self.first_name: str = first_name
         self.last_name: str = last_name
-        self.name: str = name
+        self.name: str = (
+            name
+            if name is not None
+            else " ".join(part for part in (first_name, last_name) if part)
+        )
         self.username: "str | None" = username
         self.is_bot: bool = is_bot
         self.last_activity_time: float | None = (
