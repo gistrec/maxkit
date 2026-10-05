@@ -110,3 +110,43 @@ def test_context_manager_refuses_a_second_open_session():
                     pass
 
     asyncio.run(run())
+
+
+class _FakeResponse:
+    def __init__(self, body):
+        self._body = body
+
+    async def json(self):
+        return self._body
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"success": False, "code": "message.not.found", "message": "gone"},
+        {"success": False},
+    ],
+)
+def test_delete_message_failure_raises_a_typed_error(body):
+    bot = aiomax.Bot("token")
+
+    async def fake_delete(url, *args, **kwargs):
+        return _FakeResponse(body)
+
+    bot.delete = fake_delete
+
+    with pytest.raises(exceptions.UnknownErrorException) as info:
+        asyncio.run(bot.delete_message("mid"))
+
+    assert info.value.text == body.get("code", "")
+
+
+def test_delete_message_success_returns_quietly():
+    bot = aiomax.Bot("token")
+
+    async def fake_delete(url, *args, **kwargs):
+        return _FakeResponse({"success": True})
+
+    bot.delete = fake_delete
+
+    assert asyncio.run(bot.delete_message("mid")) is None
