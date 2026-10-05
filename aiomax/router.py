@@ -1,5 +1,4 @@
 import logging
-from copy import deepcopy
 from typing import Callable, Optional
 
 from . import exceptions
@@ -87,7 +86,13 @@ class Router:
         """
         Returns all handlers in this and all the child routers.
         """
-        out = deepcopy(self._handlers)
+        # New lists, same handler objects: extending must not touch
+        # self._handlers, but a deep copy would clone each handler's bound
+        # object on every update (losing its state, or raising TypeError on
+        # anything unpicklable such as a lock or a session).
+        out = {
+            kind: list(handlers) for kind, handlers in self._handlers.items()
+        }
 
         for router in self.routers:
             for handler_type in out:
@@ -100,7 +105,9 @@ class Router:
         """
         Returns all commands in this and all the child routers.
         """
-        out = deepcopy(self._commands)
+        out = {
+            name: list(handlers) for name, handlers in self._commands.items()
+        }
         for router in self.routers:
             # Merge (not overwrite): a command name defined in more than one
             # router must keep every handler, mirroring the handlers property.
