@@ -71,7 +71,7 @@ def test_get_exception_without_code_field():
 
 # --- L4 -------------------------------------------------------------------
 
-def test_upload_uses_fixed_field_name_and_filename():
+def test_upload_uses_fixed_field_name_and_filename(monkeypatch):
     bot = aiomax.Bot("token")
     captured = {}
 
@@ -82,16 +82,36 @@ def test_upload_uses_fixed_field_name_and_filename():
         def raise_for_status(self):
             return None
 
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return None
+
     async def fake_post(url, **kwargs):
         return FakeResp()
 
-    class FakeSession:
-        async def post(self, url, data=None, **kwargs):
+    class FakeApiSession:
+        connector = None
+
+    # The file goes out through a separate header-less upload session.
+    class FakeUploadSession:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return None
+
+        def post(self, url, data=None, **kwargs):
             captured["form"] = data
             return FakeResp()
 
     bot.post = fake_post
-    bot.session = FakeSession()
+    bot.session = FakeApiSession()
+    monkeypatch.setattr(aiomax.bot.aiohttp, "ClientSession", FakeUploadSession)
 
     evil = 'evil"; name="injected'
     asyncio.run(bot._upload(b"filebytes", "file", evil))
