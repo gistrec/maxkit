@@ -790,8 +790,13 @@ class Bot(Router):
         response = await self.delete("messages", params=params)
 
         json = await response.json()
-        if not json["success"]:
-            raise Exception(json["message"])
+        if not json.get("success", True):
+            # Same contract as send_message / edit_message: a typed error with
+            # Max's code, not a bare Exception (or a KeyError when the body
+            # lacks "message").
+            raise exceptions.UnknownErrorException(
+                json.get("code") or "", json.get("message")
+            )
 
     async def get_message(self, message_id: str) -> Message:
         """
