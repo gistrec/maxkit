@@ -558,14 +558,36 @@ class Bot(Router):
 
         url_resp = await self.post("uploads", params={"type": type})
         url_json = await url_resp.json()
-        token_resp = await self.session.post(url_json["url"], data=form)
-        token_resp.raise_for_status()
 
-        if type in {"audio", "video"}:
-            return url_json
+        # The upload URL points at a separate upload host, which takes no
+        # auth. Posting through self.session would hand it the bot token in
+        # the Authorization header, so use a header-less session on the same
+        # connector: same TLS context (Mintsifra CA), same connection pool.
+        # Proxy settings live on the session, not the connector, so carry a
+        # custom session's proxy, proxy auth, trust_env and timeout over.
+        api = self.session
+        async with (
+            aiohttp.ClientSession(
+                connector=api.connector,
+                connector_owner=False,
+                trust_env=getattr(api, "trust_env", False),
+                timeout=getattr(
+                    api, "timeout", aiohttp.client.DEFAULT_TIMEOUT
+                ),
+            ) as upload_session,
+            upload_session.post(
+                url_json["url"],
+                data=form,
+                proxy=getattr(api, "_default_proxy", None),
+                proxy_auth=getattr(api, "_default_proxy_auth", None),
+            ) as token_resp,
+        ):
+            token_resp.raise_for_status()
 
-        token_json = await token_resp.json()
-        return token_json
+            if type in {"audio", "video"}:
+                return url_json
+
+            return await token_resp.json()
 
     @staticmethod
     def _require_token(raw: dict, token: "str | None" = None) -> str:
