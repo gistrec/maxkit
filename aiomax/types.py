@@ -1267,7 +1267,17 @@ class Callback:
                 "Either notification, text or attachments must be specified"
             )
         body = {"notification": notification, "message": None}
-        if keyboard is None and self.message is not None:
+        # Max treats a non-empty attachments list as a replacement of all the
+        # message's attachments (null keeps them). Copy the current keyboard
+        # only when the caller replaces the attachments, so their new list
+        # does not drop the buttons. Copying it otherwise turned a bare
+        # notification into an edit with attachments=[keyboard], deleting
+        # the message's photo or file.
+        if (
+            keyboard is None
+            and attachments is not None
+            and self.message is not None
+        ):
             keyboard = [
                 i
                 for i in self.message.body.attachments
